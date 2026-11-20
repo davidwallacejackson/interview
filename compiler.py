@@ -135,24 +135,21 @@ def compile_program(program: dict) -> dict:
                 var.mem_slot = vector_cursor
                 vector_cursor += 1
 
-    for result_kind in ("vector", "scalar"):
-        for operation in operations:
-            spec = machine.OP_SPECS[operation["op"]]
-            if spec["result"] != result_kind:
-                continue
-            dest = operation["dest"]
-            if result_kind == "vector":
-                cursor = machine.align_up(cursor, machine.VLEN)
-                scratch[dest] = cursor
-                cursor += machine.VLEN
-            else:
-                scratch[dest] = cursor
-                cursor += 1
+    first_scalar_word = machine.VLEN * vector_cursor + 1
 
-    if cursor > machine.SCRATCH_WORDS:
+    if first_scalar_word + scalar_cursor > machine.SCRATCH_WORDS:
         raise machine.CompileError(
             f"program requires {cursor} scratch words, limit is {machine.SCRATCH_WORDS}"
         )
+
+
+    scratch: dict[str, int] = {}
+    for name, var in vars.items():
+        if var.var_type == VariableType.VECTOR:
+            scratch[name] = t.cast(int, var.mem_slot) * machine.VLEN
+        else:
+            scratch[name] = first_scalar_word + t.cast(int, var.mem_slot)
+
 
     # Serial, source-order scheduling with explicit latency stalls. This is a
     # correct baseline, but it leaves almost all VLIW slots empty.
