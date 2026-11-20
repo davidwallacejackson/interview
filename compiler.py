@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Luminal Compiler Take Home — compiler engineering candidate implementation.
 
-The starter is intentionally conservative: it allocates every SSA value once
-and emits at most one operation per bundle. Improve compile_program without
-changing its input or output contract. Reuse scratch for values whose scheduled
-lifetimes do not overlap to improve the scratch-footprint component of the score.
+This implementation optimizes scratch use by reclaiming scratch space after a
+variable's final read. It stores only one type of data (scalar or vector) in
+a given memory location (mixed reuse would be a future optimization).
 """
 
 from __future__ import annotations
@@ -39,6 +38,9 @@ class Variable:
     written_by_id: t.Optional[OperationId] = None
     read_by_ids: t.Set[OperationId] = field(default_factory=set)
     var_type: t.Optional[VariableType] = None
+
+    # 
+    mem_slot: t.Optional[int] = None
 
 
     @staticmethod
@@ -92,6 +94,46 @@ def compile_program(program: dict) -> dict:
     operations: list[Operation] = program["operations"]
 
     vars = get_vars(operations)
+
+    scalar_cursor = 0
+    vector_cursor = 0
+
+    # pools of free memory locations that have opened up for reuse
+    # (expressed in terms of var type-sized "slots" rather than absolute
+    # memory locations)
+
+    scalar_pool: list[int] = []
+    vector_pool: list[int] = []
+
+    for op in operations:
+        id = op["id"]
+
+        # free any vars we read this op, if this was their last read
+        for arg in op.get("args", []):
+            var = vars[arg]
+            if max(var.read_by_ids) == id:
+                if var.var_type == VariableType.SCALAR:
+                    scalar_pool.append(t.cast(int, var.mem_slot))
+                else:
+                    vector_pool.append(t.cast(int, var.mem_slot))
+
+        # pick a spot for this operation's result, if any:
+        if dest := op.get("dest"):
+            var = vars[dest]
+            if var.var_type == VariableType.SCALAR:
+                if len(scalar_pool) > 0:
+                    var.mem_slot = scalar_pool.pop()
+                    continue
+
+                var.mem_slot = scalar_cursor
+                scalar_cursor += 1
+            else:
+                if len(vector_pool) > 0:
+                    var.mem_slot = vector_pool.pop()
+                    continue
+
+                var.mem_slot = vector_cursor
+                vector_cursor += 1
 
     for result_kind in ("vector", "scalar"):
         for operation in operations:
